@@ -1,29 +1,38 @@
 # Azure hub-and-spoke with Container Apps
 
-Terraform deploys a small hub-and-spoke environment that demonstrates
-controlled application traffic through Azure Firewall Basic.
+Terraform deploys a public Application Gateway and two internal Azure
+Container Apps environments across a hub-and-spoke network. Requests enter
+through the DMZ spoke, while traffic from the NGINX proxy to the application
+spoke traverses two Azure Firewall Basic instances.
 
 ```text
 Internet
    |
+   | HTTPS (HTTP redirects to HTTPS)
    v
-+-------------------- DMZ spoke (10.1.0.0/16) --------------------+
-| Application Gateway Standard_v2                                 |
-|   -> internal NGINX Container App                               |
-|        -> DMZ Azure Firewall Basic                              |
-+-------------------------------+----------------------------------+
++----------------------- DMZ spoke (10.1.0.0/16) -----------------------+
+| Public Application Gateway Standard_v2                               |
+|   | HTTPS over the DMZ VNet (does not traverse a firewall)           |
+|   v                                                                   |
+| NGINX Container App in an internal Container Apps environment        |
+|   | default route                                                    |
+|   v                                                                   |
+| DMZ Azure Firewall Basic                                             |
++-------------------------------+---------------------------------------+
                                 |
-                                | all DMZ egress
+                                | private 10.0.0.0/8 route
                                 v
-+------------------------ Hub (10.0.0.0/16) -----------------------+
-| Azure Firewall Basic                                            |
-+-------------------------------+----------------------------------+
++-------------------------- Hub (10.0.0.0/16) --------------------------+
+| Hub Azure Firewall Basic                                             |
++-------------------------------+---------------------------------------+
                                 |
-                                | HTTPS through UDR
+                                | HTTPS over hub-to-app VNet peering
                                 v
-+------------------- Application spoke (10.2.0.0/16) -------------+
-| internal hello-world Container App                              |
-+------------------------------------------------------------------+
++-------------------- Application spoke (10.2.0.0/16) -----------------+
+| Hello-world Container App in an internal Container Apps environment  |
++------------------------------------------------------------------------+
+
+Return path: application spoke -> hub firewall -> DMZ firewall -> NGINX
 ```
 
 The NGINX proxy and hello-world application use the Azure Linux NGINX image
@@ -31,21 +40,31 @@ hosted in Microsoft Artifact Registry:
 
 - `mcr.microsoft.com/azurelinux/base/nginx:1`
 
+Both Container Apps environments use internal load balancers. Their apps set
+`external_enabled = true`, which makes ingress reachable from their virtual
+networks through the environment's private IP; it does not expose either
+Container App directly to the internet. Application Gateway is the only public
+application entry point.
+
 All traffic leaving the DMZ Container Apps subnet first traverses the DMZ
-Azure Firewall. Private `10.0.0.0/8` destinations then traverse the hub Azure
-Firewall, while public internet traffic exits directly from the DMZ firewall.
-Return traffic from the application spoke follows the reverse path through
-both firewalls. Both firewalls send resource-specific logs and metrics to the
-shared Log Analytics workspace.
+firewall. The DMZ firewall sends private `10.0.0.0/8` traffic to the hub
+firewall and sends public traffic directly to the internet. The application
+spoke routes return traffic destined for the DMZ spoke through the hub
+firewall, which routes it through the DMZ firewall. Both firewalls send all
+logs and metrics to the shared Log Analytics workspace.
 
 ## Prerequisites
 
 - Terraform 1.6 or later.
 - Azure CLI authenticated to the target subscription.
 - Permissions to create networking, Container Apps, Application Gateway,
-  private DNS, and role-free infrastructure resources.
+  public and private DNS, and monitoring resources.
+- Microsoft Entra permissions to create an application registration, service
+  principal, and client secret.
 - Azure Firewall Basic and Application Gateway v2 availability in the selected
   region.
+- Access to create an NS delegation in the parent public DNS zone for
+  `acme_dns_zone_name`.
 
 ## Deploy
 
@@ -55,40 +74,60 @@ cp env.sample .env
 source .env
 
 terraform init
+```
+
+Create the Azure DNS zone first:
+
+```bash
+terraform apply -target=azurerm_dns_zone.acme
+terraform output acme_dns_delegation
+```
+
+Create the displayed NS delegation in the parent public DNS zone, then deploy
+the complete environment:
+
+```bash
 terraform apply
 ```
 
-After deployment, open the `application_url` output. Application Gateway sends
-the request to NGINX, and NGINX proxies it through Azure Firewall to the
-hello-world application.
+This ordering is required because Let's Encrypt must be able to resolve the
+delegated zone before Terraform can complete the DNS-01 certificate challenge.
 
-## Entra Easy Auth and HTTPS
+## Request and authentication flow
 
-The public NGINX Container App is protected by Container Apps Easy Auth using
-Microsoft Entra ID. Application Gateway terminates TLS for the hostname set by
-`application_hostname` and redirects HTTP requests to HTTPS.
+Application Gateway is public, terminates TLS for `application_hostname`, and
+redirects HTTP requests to HTTPS. It connects over HTTPS to the private NGINX
+Container App. NGINX is protected by Container Apps Easy Auth using Microsoft
+Entra ID and proxies authenticated requests over HTTPS to the private
+hello-world Container App.
 
 The TLS certificate is issued by Let's Encrypt. Terraform manages the
 application's delegated public DNS zone set by `acme_dns_zone_name`, including
-the apex A record and ACME DNS-01 challenge records. Before the first
-certificate request, replace the application's A record in the parent public
-DNS zone with an NS delegation using the name servers from the
-`acme_dns_name_servers` output. The full record is also shown by the
-`acme_dns_delegation` output.
+the apex A record pointing to Application Gateway and temporary ACME DNS-01
+challenge records.
 
 The ACME provider uses the current Azure CLI login to create temporary TXT
-challenge records in the delegated zone. Set `TF_VAR_acme_email_address` before
-running Terraform.
+challenge records in the delegated zone.
 
 ## Validate
 
+The unauthenticated health endpoint verifies the public Application Gateway to
+private NGINX path:
+
 ```bash
-curl "$(terraform output -raw application_url)"
+curl "$(terraform output -raw application_url)/healthz"
 ```
 
-Application Gateway and Azure Firewall can each take several minutes to
-provision. This example uses HTTP on the public frontend and HTTPS for both
-Container Apps backend hops.
+Open the application URL in a browser to sign in with Microsoft Entra ID and
+reach the hello-world application:
+
+```bash
+terraform output -raw application_url
+```
+
+An unauthenticated request to the root URL receives a redirect to the Microsoft
+Entra login flow. Application Gateway and Azure Firewall can each take several
+minutes to provision.
 
 ## Clean up
 
