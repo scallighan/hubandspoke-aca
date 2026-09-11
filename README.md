@@ -129,6 +129,32 @@ An unauthenticated request to the root URL receives a redirect to the Microsoft
 Entra login flow. Application Gateway and Azure Firewall can each take several
 minutes to provision.
 
+## Downstream identity claims
+
+After authentication, Easy Auth injects the signed-in user's claims into the
+NGINX request. NGINX explicitly overwrites and forwards the trusted header to
+the hello-world application:
+
+```text
+X-MS-CLIENT-PRINCIPAL: <Base64-encoded JSON claims>
+```
+
+The hello-world application can Base64-decode the header and parse the JSON
+claims. It must not accept this header through any route that bypasses Easy
+Auth and NGINX.
+
+The DMZ NGINX structured access log records a broad safe allowlist of request,
+content-negotiation, forwarding, browser fetch-metadata, and tracing headers.
+It records `principal_present` and the Base64-encoded
+`X-MS-CLIENT-PRINCIPAL` value. Authorization values, cookies, provider token
+headers, arbitrary custom headers, and query strings are deliberately
+excluded. The principal value contains user identity claims and must be
+protected as personal data in Log Analytics.
+
+The hello-world app also records `principal_present` and the forwarded
+`X-MS-CLIENT-PRINCIPAL` value so the identity propagation across both
+Container Apps can be verified.
+
 ## Clean up
 
 ```bash

@@ -69,6 +69,7 @@ resource "azurerm_application_gateway" "this" {
   backend_http_settings {
     name                                = "nginx-https"
     cookie_based_affinity               = "Disabled"
+    affinity_cookie_name                = "ApplicationGatewayAffinity"
     protocol                            = "Https"
     port                                = 443
     request_timeout                     = 30
@@ -139,5 +140,6 @@ resource "azurerm_application_gateway" "this" {
 
   depends_on = [
     azurerm_private_dns_zone_virtual_network_link.dmz_zone_to_dmz,
+    azurerm_subnet_network_security_group_association.application_gateway,
   ]
 }

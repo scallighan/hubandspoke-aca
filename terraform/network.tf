@@ -43,6 +43,42 @@ resource "azurerm_subnet" "application_gateway" {
   address_prefixes     = [var.dmz_application_gateway_subnet_prefix]
 }
 
+resource "azurerm_network_security_group" "application_gateway" {
+  name                = "nsg-appgw-${local.unique_name}"
+  location            = azurerm_resource_group.this.location
+  resource_group_name = azurerm_resource_group.this.name
+  tags                = local.tags
+
+  security_rule {
+    name                       = "AllowClientTraffic"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["80", "443"]
+    source_address_prefix      = "Internet"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "AllowGatewayManager"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "65200-65535"
+    source_address_prefix      = "GatewayManager"
+    destination_address_prefix = "*"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "application_gateway" {
+  subnet_id                 = azurerm_subnet.application_gateway.id
+  network_security_group_id = azurerm_network_security_group.application_gateway.id
+}
+
 resource "azurerm_subnet" "dmz_firewall" {
   name                 = "AzureFirewallSubnet"
   resource_group_name  = azurerm_resource_group.this.name

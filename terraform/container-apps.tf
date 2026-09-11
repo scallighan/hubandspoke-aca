@@ -176,13 +176,20 @@ resource "azurerm_container_app" "hello_world" {
         HTML
 
         cat > /etc/nginx/nginx.conf.default <<'NGINX'
+        map $http_x_ms_client_principal $principal_present {
+          default true;
+          ""      false;
+        }
+
         log_format hello escape=json
           '{"timestamp":"$time_iso8601",'
           '"request_id":"$http_x_request_id",'
           '"client":"$remote_addr",'
           '"forwarded_for":"$http_x_forwarded_for",'
           '"method":"$request_method",'
-          '"uri":"$request_uri",'
+          '"principal_present":$principal_present,'
+          '"client_principal":"$http_x_ms_client_principal",'
+          '"uri":"$uri",'
           '"status":$status,'
           '"request_time":$request_time}';
 
@@ -250,14 +257,38 @@ resource "azurerm_container_app" "nginx" {
       command = ["/bin/bash", "-c"]
       args = [<<-EOT
         cat > /etc/nginx/nginx.conf.default <<'NGINX'
+        map $http_x_ms_client_principal $principal_present {
+          default true;
+          ""      false;
+        }
+
         log_format flow escape=json
           '{"timestamp":"$time_iso8601",'
           '"request_id":"$request_id",'
+          '"inbound_request_id":"$http_x_request_id",'
+          '"traceparent":"$http_traceparent",'
           '"client":"$remote_addr",'
           '"forwarded_for":"$http_x_forwarded_for",'
+          '"forwarded_host":"$http_x_forwarded_host",'
+          '"forwarded_port":"$http_x_forwarded_port",'
+          '"forwarded_proto":"$http_x_forwarded_proto",'
           '"method":"$request_method",'
           '"host":"$host",'
-          '"uri":"$request_uri",'
+          '"origin":"$http_origin",'
+          '"user_agent":"$http_user_agent",'
+          '"accept":"$http_accept",'
+          '"accept_encoding":"$http_accept_encoding",'
+          '"accept_language":"$http_accept_language",'
+          '"cache_control":"$http_cache_control",'
+          '"content_type":"$content_type",'
+          '"content_length":"$content_length",'
+          '"sec_fetch_dest":"$http_sec_fetch_dest",'
+          '"sec_fetch_mode":"$http_sec_fetch_mode",'
+          '"sec_fetch_site":"$http_sec_fetch_site",'
+          '"sec_fetch_user":"$http_sec_fetch_user",'
+          '"principal_present":$principal_present,'
+          '"client_principal":"$http_x_ms_client_principal",'
+          '"uri":"$uri",'
           '"status":$status,'
           '"request_time":$request_time,'
           '"upstream_address":"$upstream_addr",'
@@ -283,6 +314,7 @@ resource "azurerm_container_app" "nginx" {
             proxy_set_header X-Forwarded-For $${proxy_add_x_forwarded_for};
             proxy_set_header X-Forwarded-Proto $${scheme};
             proxy_set_header X-Request-ID $request_id;
+            proxy_set_header X-MS-CLIENT-PRINCIPAL $${http_x_ms_client_principal};
             proxy_ssl_name ${azurerm_container_app.hello_world.ingress[0].fqdn};
             proxy_ssl_server_name on;
             proxy_pass https://${azurerm_container_app.hello_world.ingress[0].fqdn};
